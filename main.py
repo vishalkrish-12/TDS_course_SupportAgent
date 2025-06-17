@@ -17,7 +17,7 @@ import re
 # --- Load Data and Models ---
 
 
-DATA_DIR = "/data"
+DATA_DIR = "data"
 EMBEDDINGS_PATH = os.path.join(DATA_DIR, "embeddings.npy")
 METADATA_PATH = os.path.join(DATA_DIR, "metadatas.pkl")
 DOCS_PATH = os.path.join(DATA_DIR, "documents.pkl")

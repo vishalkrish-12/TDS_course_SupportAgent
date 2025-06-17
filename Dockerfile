@@ -11,6 +11,8 @@ RUN python -m spacy download en_core_web_md
 
 COPY . .
 
+COPY data ./data
+
 EXPOSE 8000
 
 CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
