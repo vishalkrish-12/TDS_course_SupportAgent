@@ -117,6 +117,3 @@ This project is for educational use.
 - [Render](https://render.com/)
 
 ---
-
-**Maintainer:** [Your Name or Organization]  
-**Contact:** [your-email@example.com]
