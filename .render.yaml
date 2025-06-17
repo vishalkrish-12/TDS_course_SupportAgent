@@ -1,0 +1,13 @@
+services:
+  - type: web
+    name: tds-virtual-ta
+    env: docker
+    plan: starter
+    disk:
+      name: chroma-db-disk
+      mountPath: /app/chroma_db
+      sizeGB: 1
+    envVars:
+      - key: AIPIPE_TOKEN
+        sync: false
+    autoDeploy: true
