@@ -1,32 +1,64 @@
 import os
-import chromadb
-import requests # Import the requests library
+# os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
+import pickle
+import numpy as np
+import faiss
+import spacy
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 from typing import Optional, List
-from dotenv import load_dotenv
 from fastapi.middleware.cors import CORSMiddleware
-from sentence_transformers import SentenceTransformer
-import numpy as np
+import requests
+import re
 
-# Load environment variables from .env file (optional)
-# load_dotenv()
+# import spacy
+# spacy.cli.download("en_core_web_md")
+
+# --- Load Data and Models ---
+
+
+DATA_DIR = "/data"
+EMBEDDINGS_PATH = os.path.join(DATA_DIR, "embeddings.npy")
+METADATA_PATH = os.path.join(DATA_DIR, "metadatas.pkl")
+DOCS_PATH = os.path.join(DATA_DIR, "documents.pkl")
+FAISS_INDEX_PATH = os.path.join(DATA_DIR, "faiss.index")
+
+# EMBEDDINGS_PATH = "embeddings.npy"
+# METADATA_PATH = "metadatas.pkl"
+# DOCS_PATH = "documents.pkl"
+# FAISS_INDEX_PATH = "faiss.index"
+
+nlp = spacy.load("en_core_web_md")
+
+def preprocess(text):
+    # Remove HTML tags
+    text = re.sub(r'<.*?>', '', text)
+    # Remove markdown links/images
+    text = re.sub(r'!\[.*?\]\(.*?\)', '', text)
+    text = re.sub(r'\[.*?\]\(.*?\)', '', text)
+    # Remove extra whitespace
+    text = re.sub(r'\s+', ' ', text).strip()
+    # Lowercase
+    text = text.lower()
+    # Remove stopwords (optional)
+    doc = nlp(text)
+    text = ' '.join([token.text for token in doc if not token.is_stop])
+    return text
+
+with open(METADATA_PATH, "rb") as f:
+    metadatas = pickle.load(f)
+with open(DOCS_PATH, "rb") as f:
+    documents = pickle.load(f)
+embeddings = np.load(EMBEDDINGS_PATH)
+index = faiss.read_index(FAISS_INDEX_PATH)
 
 # --- API and Proxy Configuration ---
-# API_PROXY_URL = "https://aipipe.org/v1/chat/completions"
-API_PROXY_URL =  "https://aipipe.org/openrouter/v1/chat/completions"
+API_PROXY_URL = "https://aipipe.org/openrouter/v1/chat/completions"
 API_KEY = os.getenv("AIPIPE_TOKEN")
 if not API_KEY:
     raise Exception("The AIPIPE_TOKEN environment variable is not set. Please set it before running the app.")
 
-# --- Initialize ChromaDB Client ---
-# CHROMA_PATH = "chroma_db"
-CHROMA_PATH = os.path.join(os.path.dirname(__file__), "chroma_db")
-COLLECTION_NAME = "tds_virtual_ta"
-client = chromadb.PersistentClient(path=CHROMA_PATH)
-collection = client.get_collection(name=COLLECTION_NAME)
-
-# --- Pydantic Models for API Data Structure ---
+# --- Pydantic Models ---
 class StudentRequest(BaseModel):
     question: str
     image: Optional[str] = Field(None, description="Optional base64 encoded image string.")
@@ -39,72 +71,62 @@ class ApiResponse(BaseModel):
     answer: str
     links: List[Link]
 
-# --- FastAPI Application ---
+# --- FastAPI App ---
 app = FastAPI(
-    title="TDS Virtual TA (AIProxy Version)",
+    title="TDS Virtual TA (spaCy+FAISS Version)",
     description="An API for answering student questions using the aipipe.org proxy.",
-    version="1.1.0"
+    version="2.0.0"
 )
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],            # Allow all origins
+    allow_origins=["*"],
     allow_credentials=True,
-    allow_methods=["*"],            # Allow all HTTP methods (GET, POST, etc.)
-    allow_headers=["*"],            # Allow all headers
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
-
-# Initialize embedding model globally (so it's loaded only once)
-embedding_model = SentenceTransformer('all-MiniLM-L6-v2')
 
 def cosine_similarity(a, b):
     a = np.array(a)
     b = np.array(b)
     return np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b))
 
-# --- Core RAG Logic ---
 def query_rag(question: str, image: str = None) -> ApiResponse:
-    # 1. Retrieval: Find relevant context
-    results = collection.query(query_texts=[question], n_results=30, include=['documents', 'metadatas', 'embeddings'])
-        # Defensive check for empty results
-    if (
-        not results or
-        not results.get('documents') or not results['documents'] or not results['documents'][0]
-    ):
-        return ApiResponse(
-            answer="Sorry, I couldn't find any relevant information in the knowledge base.",
-            links=[]
-        )
+    # # 1. Embed the user's question
+    # question_embedding = nlp(question).vector.astype("float32").reshape(1, -1)
 
-    retrieved_documents = results['documents'][0]
-    metadatas = results['metadatas'][0]
-    doc_embeddings = results['embeddings'][0]
-
-    # 2. Embed the user's question
-    question_embedding = embedding_model.encode([question])[0]
-
-    # 3. Re-rank by cosine similarity
-    doc_scores = [
-        (cosine_similarity(question_embedding, doc_emb), doc, meta)
-        for doc_emb, doc, meta in zip(doc_embeddings, retrieved_documents, metadatas)
-    ]
-    doc_scores.sort(reverse=True, key=lambda x: x[0])
-    top_n = 10
-    top_docs = doc_scores[:top_n]
-    context = "\n\n---\n\n".join([doc for _, doc, _ in top_docs])
-    top_metadatas = [meta for _, _, meta in top_docs]
+    # # Normalize the question embedding
+    # question_embedding = question_embedding / np.clip(np.linalg.norm(question_embedding, axis=1, keepdims=True), a_min=1e-10, a_max=None)
     
+    # Preprocess the question
+    clean_question = preprocess(question)
+    # Embed the preprocessed question
+    question_embedding = nlp(clean_question).vector.astype("float32").reshape(1, -1)
+    # Normalize the question embedding
+    question_embedding = question_embedding / np.clip(np.linalg.norm(question_embedding, axis=1, keepdims=True), a_min=1e-10, a_max=None)
+    
+    # 2. Search FAISS index
+    k = 20
+    D, I = index.search(question_embedding, k)
+    # 3. Retrieve top documents and metadata
+    top_docs = []
+    top_links = []
+    for idx in I[0]:
+        doc = documents[idx]
+        meta = metadatas[idx]
+        top_docs.append(doc)
+        if meta.get("source", "").startswith("http"):
+            top_links.append(Link(url=meta["source"], text=doc))
+    context = "\n\n---\n\n".join(top_docs)
 
-    # 2. Augmentation: Construct the prompt
-    prompt_template = f""" You are a helpful teaching assistant. Use the following context to answer the student's question
+    # 4. Augmentation: Construct the prompt
+    prompt_template = f"""You are a helpful teaching assistant. Use the following context to answer the student's question
     CONTEXT:
     {context}
 
     STUDENT'S QUESTION:
     {question}
     """
-
-    # If image is provided, add a note to the prompt
     if image:
         prompt_template += "\n\nNOTE: The student attached an image, but image understanding is not supported."
 
@@ -113,12 +135,11 @@ def query_rag(question: str, image: str = None) -> ApiResponse:
         {"role": "user", "content": prompt_template}
     ]
 
-    # 3. Generation: Call the AIProxy endpoint
+    # 5. Generation: Call the AIProxy endpoint
     headers = {
         "Authorization": f"Bearer {API_KEY}",
         "Content-Type": "application/json"
     }
-    
     payload = {
         "model": "gpt-4.1-nano",
         "messages": messages,
@@ -138,21 +159,7 @@ def query_rag(question: str, image: str = None) -> ApiResponse:
         print(f"Error parsing AIProxy response: {e}")
         raise HTTPException(status_code=500, detail="Invalid response format from the AI proxy.")
 
-    # Format links from the retrieved documents' metadata
-    links = [
-        Link(url=meta.get('source', ''), text=doc)
-        for _, doc, meta in top_docs
-        if meta.get('source', '').startswith('http') or meta.get('source', '').startswith('https')
-    ]
-
-    return ApiResponse(answer=answer, links=links)
-
-# @app.post("/api/", response_model=ApiResponse)
-# async def handle_question(request: StudentRequest):
-#     if not request.question:
-#         raise HTTPException(status_code=400, detail="Question field cannot be empty.")
-
-#     return query_rag(request.question, request.image)
+    return ApiResponse(answer=answer, links=top_links)
 
 @app.post("/api", response_model=ApiResponse)
 @app.post("/api/", response_model=ApiResponse, include_in_schema=False)
