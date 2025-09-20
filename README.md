@@ -108,12 +108,3 @@ curl "http://<your-domain>/api/" `
 This project is for educational use.
 
 ---
-
-## Acknowledgements
-
-- [spaCy](https://spacy.io/)
-- [FAISS](https://github.com/facebookresearch/faiss)
-- [FastAPI](https://fastapi.tiangolo.com/)
-- [Render](https://render.com/)
-
----
