@@ -1,8 +1,0 @@
-services:
-  - type: web
-    name: tds-virtual-ta
-    env: docker
-    plan: free
-    envVars:
-      - key: AIPIPE_TOKEN
-        sync: false
